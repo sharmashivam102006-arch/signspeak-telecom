@@ -1,0 +1,20 @@
+# Environment / secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Databases (local dev data)
+*.db
+*.sqlite3
+
+# AI models + recorded data (downloaded / user-generated, never commit)
+models/
+data/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/

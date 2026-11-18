@@ -1,0 +1,37 @@
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0
+alembic>=1.13  # database migrations (see backend/alembic/ + docs/DATABASE.md)
+psycopg[binary]>=3.1  # PostgreSQL driver for DATABASE_URL=postgresql+psycopg://...
+redis>=5.0  # optional state store backend (REDIS_URL); in-memory is the default
+pydantic>=2.6
+pydantic[email]>=2.6
+python-jose[cryptography]>=3.3
+passlib[bcrypt]>=1.7
+bcrypt==4.0.1
+python-multipart>=0.0.9
+# NOTE: httpx was removed 2026-11-18 — no app code imports it. The test
+# suite's starlette TestClient uses httpx2, which arrives as a hard
+# dependency of huggingface-hub (via faster-whisper), so a fresh install
+# still gets a working TestClient without an httpx line here.
+python-dotenv>=1.0
+pytest>=8.0
+livekit-api>=2.0,<3  # REQUIRED: real LiveKit tokens, RoomService, webhooks
+# --- AI pipelines (REQUIRED — real models, no stubs) ---
+# torch CPU wheel: install with
+#   TMPDIR=$HOME/.cache/pip-tmp pip install --index-url https://download.pytorch.org/whl/cpu torch
+# (plain `pip install torch` pulls the CUDA wheel; TMPDIR avoids /tmp filling up)
+torch>=2.2  # SignLSTM inference + training (CPU)
+numpy>=1.26  # landmark/audio arrays, TTS resampling
+mediapipe>=0.10  # server-side MediaPipe Hands extraction
+opencv-python-headless>=4.9  # frame handling for vision_service
+faster-whisper>=1.0  # server-side Whisper ASR (tiny, int8, CPU)
+av==13.1.0  # PyAV pinned: faster-whisper 1.2.1 passes metadata_errors to
+            # av.open, which av>=15 removed; av 14 has no cp312 wheel
+piper-tts>=1.2  # server-side Piper neural TTS
+livekit>=1.3  # LiveKit Python RTC SDK (voice agent joins rooms as a participant)
+slowapi>=0.1  # rate limiting (auth + heavy AI endpoints; see app/security.py)
+# Model files are NOT in git: download once with
+#   python -m app.services.speech_service --download   # faster-whisper tiny
+#   python -m app.services.tts_service --download      # Piper en_US-lessac-medium
+# into backend/models/ (gitignored).

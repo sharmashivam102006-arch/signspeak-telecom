@@ -1,0 +1,53 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Databases (local dev + test artefacts)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+
+# ML models + weights (downloaded, not source)
+# Models are downloaded at Docker build time / first start; see
+# backend/Dockerfile and backend/README.md. Weights are build artefacts.
+models/
+*.pt
+*.onnx
+*.onnx.json
+*.task
+# EXCEPTION: the frontend bundles one copy of hand_landmarker.task
+# (frontend/public/mediapipe/) so hand tracking works without a CDN.
+# It is a checked-in runtime asset, not a downloaded model — keep it tracked.
+!frontend/public/mediapipe/hand_landmarker.task
+
+# Recorded sign samples + generated TTS audio (user data)
+backend/data/
+data/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.log
+
+# LiveKit server binary (57 MB, downloaded separately; see livekit/livekit.yaml)
+livekit/livekit-server
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+tsconfig.tsbuildinfo
