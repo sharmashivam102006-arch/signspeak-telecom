@@ -21,7 +21,7 @@ __pycache__/
 # ML models + weights (downloaded, not source)
 # Models are downloaded at Docker build time / first start; see
 # backend/Dockerfile and backend/README.md. Weights are build artefacts.
-models/
+/backend/models/
 *.pt
 *.onnx
 *.onnx.json

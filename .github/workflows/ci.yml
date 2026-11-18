@@ -36,6 +36,13 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu torch
           pip install -r requirements.txt
 
+      - name: Download AI models used by integration tests
+        working-directory: backend
+        run: |
+          python -m app.services.speech_service --download
+          python -m app.services.tts_service --download
+          python -m app.services.vision_service --download
+
       - name: Run backend tests
         working-directory: backend
         env:

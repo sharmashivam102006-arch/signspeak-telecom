@@ -627,9 +627,15 @@ def _ensure_livekit_server():
     finally:
         s.close()
     backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    livekit_dir = os.path.join(os.path.dirname(backend_dir), "livekit")
+    server_path = os.path.join(livekit_dir, "livekit-server")
+    if not os.path.isfile(server_path):
+        pytest.skip(
+            "LiveKit server binary is not installed; install it to run the "
+            "voice-agent lifecycle test.")
     proc = subprocess.Popen(
-        ["./livekit-server", "--config", "livekit.yaml"],
-        cwd=os.path.join(os.path.dirname(backend_dir), "livekit"),
+        [server_path, "--config", "livekit.yaml"],
+        cwd=livekit_dir,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(40):
         s = socket.socket()

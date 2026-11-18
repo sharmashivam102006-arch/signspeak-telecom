@@ -8,7 +8,7 @@
 *.sqlite3
 
 # AI models + recorded data (downloaded / user-generated, never commit)
-models/
+/models/
 data/
 
 # Python
