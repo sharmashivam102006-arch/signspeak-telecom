@@ -1,0 +1,13 @@
+node_modules/
+.next/
+__pycache__/
+*.pyc
+.env
+.venv/
+ml/data/raw/**/*.npz
+ml/artifacts/*
+!ml/artifacts/.gitkeep
+apps/web/public/models/*
+*.pt
+*.onnx
+.DS_Store

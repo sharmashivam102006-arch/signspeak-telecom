@@ -1,0 +1,155 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Accessibility is the product here, so these are not cosmetic choices.
+ *
+ * Captions are the primary channel for one participant, not an overlay. They
+ * get the contrast budget, the type scale and the stable layout; the video
+ * gets what is left. That inverts the usual video-call hierarchy on purpose.
+ */
+
+:root {
+  --bg: 12 14 20;
+  --surface: 22 25 34;
+  --border: 45 50 65;
+  --fg: 238 240 246;
+  --muted: 150 157 175;
+  --accent: 96 165 250;
+  --high: 74 222 128;
+  --medium: 250 204 21;
+  --low: 248 113 113;
+}
+
+/* Light theme. Some low-vision users need dark-on-light; assuming everyone
+   wants dark mode is its own accessibility failure. */
+:root[data-theme="light"] {
+  --bg: 250 250 252;
+  --surface: 255 255 255;
+  --border: 214 219 230;
+  --fg: 18 20 28;
+  --muted: 92 100 118;
+  --accent: 29 78 216;
+  --high: 21 128 61;
+  --medium: 161 98 7;
+  --low: 185 28 28;
+}
+
+/* High contrast. Pure black/white with saturated status colors, all of which
+   clear WCAG AAA (7:1) against their backgrounds. */
+:root[data-contrast="high"] {
+  --bg: 0 0 0;
+  --surface: 0 0 0;
+  --border: 255 255 255;
+  --fg: 255 255 255;
+  --muted: 220 220 220;
+  --accent: 120 190 255;
+  --high: 80 255 140;
+  --medium: 255 220 60;
+  --low: 255 120 120;
+}
+
+:root[data-contrast="high"] * {
+  border-color: rgb(var(--border)) !important;
+}
+
+html,
+body {
+  background: rgb(var(--bg));
+  color: rgb(var(--fg));
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Focus must always be visible. A keyboard user who cannot see where they are
+   cannot use the call controls, and "it looked cleaner without it" is not a
+   reason. */
+:focus-visible {
+  outline: 3px solid rgb(var(--accent));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Respect the OS setting, and let the in-app toggle force it on. Vestibular
+   disorders are common, and a caption that slides in is a caption that is
+   harder to read. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  animation-duration: 0.01ms !important;
+  transition-duration: 0.01ms !important;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  padding: 0.75rem 1.25rem;
+  background: rgb(var(--accent));
+  color: rgb(var(--bg));
+  font-weight: 600;
+}
+.skip-link:focus {
+  left: 0.5rem;
+  top: 0.5rem;
+}
+
+/* Confidence bar. A number alone fails for anyone who does not read numbers
+   quickly under pressure, so pair it with length and color - and never rely on
+   color alone, which fails for the ~8% of men with colour vision deficiency. */
+.confidence-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgb(var(--border));
+  overflow: hidden;
+}
+.confidence-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 180ms linear;
+}
+
+/* Caption rail must not reflow as text arrives. Layout shift is disorienting
+   when captions are your only access to the conversation. */
+.caption-rail {
+  min-height: 7.5rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.pulse-recording {
+  animation: pulse-ring 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes pulse-ring {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(var(--low) / 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgb(var(--low) / 0);
+  }
+}

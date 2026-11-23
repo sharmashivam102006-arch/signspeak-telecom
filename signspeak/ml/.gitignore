@@ -1,0 +1,7 @@
+data/raw/**/*.npz
+artifacts/*
+!artifacts/.gitkeep
+models/*.task
+__pycache__/
+*.pt
+*.onnx

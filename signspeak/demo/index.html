@@ -1,0 +1,1196 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
+<title>SignSpeak Telecom — live demo</title>
+<!--
+  Zero-setup demo of the whole SignSpeak loop. No server, no build, no model
+  download beyond MediaPipe's own weights.
+
+  What is real here:
+    * the same body-anchored feature encoder as apps/web/lib/features.ts and
+      ml/signspeak_ml/features.py
+    * the same hysteresis segmenter, with the same constants
+    * a DTW k-NN classifier you teach in about two minutes
+    * distance-based confidence with an abstain threshold derived from the
+      within-class spread of your own samples
+    * live captions, speech recognition, speech synthesis, transcript
+    * optional 1:1 WebRTC with manual signalling, so two laptops can actually
+      talk to each other with nothing running in between
+
+  What is NOT here, deliberately: the trained GRU. Few-shot k-NN is the honest
+  thing to demo before you have a dataset, and it is also genuinely useful -
+  a system that can only recognise what it was trained on months ago is not an
+  accessibility tool. The trained model lives in /ml and slots in behind the
+  same interface.
+
+  Serve it, do not open it as a file - getUserMedia needs a secure context:
+      python3 -m http.server 8080      then visit http://localhost:8080/demo/
+-->
+<style>
+  :root{
+    --bg:#0c0e14; --surface:#161922; --surface2:#1e2230; --border:#2d3241;
+    --fg:#eef0f6; --muted:#969dae; --accent:#60a5fa;
+    --high:#4ade80; --medium:#facc15; --low:#f87171;
+    --radius:12px;
+  }
+  :root[data-contrast="high"]{
+    --bg:#000; --surface:#000; --surface2:#000; --border:#fff; --fg:#fff;
+    --muted:#ddd; --accent:#78beff; --high:#50ff8c; --medium:#ffdc3c; --low:#ff7878;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3{margin:0; font-weight:600; letter-spacing:-0.01em}
+  button{font:inherit; cursor:pointer}
+  :focus-visible{outline:3px solid var(--accent); outline-offset:2px; border-radius:4px}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+
+  header{
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+    padding:14px 20px; border-bottom:1px solid var(--border);
+    position:sticky; top:0; background:var(--bg); z-index:10;
+  }
+  .brand{display:flex; align-items:baseline; gap:12px}
+  .brand small{color:var(--muted); font-weight:400}
+  .toolbar{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+
+  .btn{
+    background:var(--surface); color:var(--fg); border:1px solid var(--border);
+    padding:8px 14px; border-radius:8px; transition:border-color .15s;
+  }
+  .btn:hover{border-color:var(--accent)}
+  .btn[aria-pressed="true"]{border-color:var(--accent); color:var(--accent)}
+  .btn.primary{background:var(--accent); color:#0b1220; border-color:var(--accent); font-weight:600}
+  .btn.danger{background:var(--low); color:#160000; border-color:var(--low); font-weight:600}
+  .btn:disabled{opacity:.45; cursor:not-allowed}
+  .btn.sm{padding:5px 10px; font-size:13px}
+
+  main{max-width:1240px; margin:0 auto; padding:20px; display:grid; gap:18px; grid-template-columns:1fr 360px}
+  @media (max-width:980px){ main{grid-template-columns:1fr} }
+
+  .card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px}
+  .card h2{font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:12px}
+
+  .stage{position:relative; border-radius:var(--radius); overflow:hidden; background:#000; border:1px solid var(--border)}
+  video{width:100%; aspect-ratio:16/9; object-fit:cover; display:block}
+  #self{transform:scaleX(-1)}
+  .guide{position:absolute; inset:0; pointer-events:none}
+  .badge{
+    position:absolute; left:10px; bottom:10px; background:rgba(0,0,0,.72);
+    padding:4px 9px; border-radius:6px; font-size:12px; color:#fff;
+  }
+
+  .videos{display:grid; gap:12px; grid-template-columns:1fr 1fr}
+  @media (max-width:760px){ .videos{grid-template-columns:1fr} }
+
+  .status{display:flex; align-items:center; gap:8px; font-size:13px; color:var(--muted)}
+  .dot{width:10px; height:10px; border-radius:50%; background:var(--muted); flex:none}
+  .dot.ok{background:var(--high)} .dot.warn{background:var(--medium)}
+  .dot.bad{background:var(--low)} .dot.busy{background:var(--accent); animation:pulse 1.2s infinite}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(96,165,250,.6)}50%{box-shadow:0 0 0 9px rgba(96,165,250,0)}}
+  @media (prefers-reduced-motion:reduce){ .dot.busy{animation:none} }
+  :root[data-motion="reduced"] .dot.busy{animation:none}
+
+  .rail{
+    min-height:190px; max-height:300px; overflow-y:auto; display:flex;
+    flex-direction:column; gap:14px; padding:14px;
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  }
+  .line .meta{font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+  .line .text{margin-top:3px}
+  [data-caption="small"] .line .text{font-size:16px}
+  [data-caption="medium"] .line .text{font-size:22px}
+  [data-caption="large"] .line .text{font-size:30px; line-height:1.35}
+  [data-caption="xlarge"] .line .text{font-size:40px; line-height:1.25}
+  .line.interim .text{opacity:.62; font-style:italic}
+
+  .chip{border:1px solid var(--border); border-radius:5px; padding:1px 6px; font-size:11px; font-variant-numeric:tabular-nums}
+  .chip.high{color:var(--high); border-color:color-mix(in srgb, var(--high) 50%, transparent)}
+  .chip.medium{color:var(--medium); border-color:color-mix(in srgb, var(--medium) 50%, transparent)}
+  .chip.low{color:var(--low); border-color:color-mix(in srgb, var(--low) 50%, transparent)}
+
+  .result{font-size:34px; font-weight:600; line-height:1.1; margin-bottom:4px}
+  .result.muted{color:var(--muted); font-size:22px}
+  .track{height:7px; border-radius:99px; background:var(--border); overflow:hidden; margin-top:6px}
+  .fill{height:100%; border-radius:99px; transition:width .18s linear}
+  :root[data-motion="reduced"] .fill{transition:none}
+
+  .grid-signs{display:grid; grid-template-columns:repeat(auto-fill,minmax(112px,1fr)); gap:8px}
+  .sign-btn{
+    background:var(--surface2); border:1px solid var(--border); color:var(--fg);
+    border-radius:9px; padding:9px 8px; text-align:left; font-size:13px;
+  }
+  .sign-btn[aria-pressed="true"]{border-color:var(--accent)}
+  .sign-btn .n{display:block; color:var(--muted); font-size:11px; margin-top:2px; font-variant-numeric:tabular-nums}
+  .sign-btn .n.enough{color:var(--high)}
+
+  .meter{height:4px; background:var(--border); border-radius:99px; overflow:hidden; margin-top:6px}
+  .meter i{display:block; height:100%; background:var(--accent)}
+
+  textarea{
+    width:100%; min-height:88px; background:var(--bg); color:var(--fg);
+    border:1px solid var(--border); border-radius:8px; padding:8px; font:12px/1.4 ui-monospace,monospace;
+    resize:vertical;
+  }
+  label.field{display:block; margin-bottom:10px}
+  label.field > span{display:block; font-size:13px; margin-bottom:4px; color:var(--muted)}
+  input[type=text]{width:100%; background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:8px; padding:8px 10px}
+  select{background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:8px; padding:7px 9px}
+
+  .tabs{display:flex; gap:4px; border-bottom:1px solid var(--border); margin-bottom:14px; flex-wrap:wrap}
+  .tab{background:none; border:none; color:var(--muted); padding:8px 12px; border-bottom:2px solid transparent}
+  .tab[aria-selected="true"]{color:var(--fg); border-bottom-color:var(--accent)}
+
+  .note{font-size:12.5px; color:var(--muted); margin-top:10px}
+  .warn{border:1px solid color-mix(in srgb, var(--medium) 45%, transparent); background:color-mix(in srgb, var(--medium) 10%, transparent); color:var(--medium); padding:9px 11px; border-radius:8px; font-size:13px}
+  .err{border:1px solid color-mix(in srgb, var(--low) 45%, transparent); background:color-mix(in srgb, var(--low) 10%, transparent); color:var(--low); padding:9px 11px; border-radius:8px; font-size:13px}
+  .kv{display:flex; justify-content:space-between; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; padding:2px 0}
+  .hidden{display:none !important}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>SignSpeak Telecom</h1>
+    <small>live demo · few-shot vocabulary</small>
+  </div>
+  <div class="toolbar">
+    <div class="status"><span class="dot" id="dotCam"></span><span id="camStatus">camera off</span></div>
+    <div class="status"><span class="dot" id="dotMic"></span><span id="micStatus">mic off</span></div>
+    <select id="captionSize" aria-label="Caption size">
+      <option value="small">Caption S</option>
+      <option value="medium" selected>Caption M</option>
+      <option value="large">Caption L</option>
+      <option value="xlarge">Caption XL</option>
+    </select>
+    <button class="btn sm" id="contrastBtn" aria-pressed="false">High contrast</button>
+    <button class="btn sm" id="motionBtn" aria-pressed="false">Reduce motion</button>
+  </div>
+</header>
+
+<main>
+  <!-- ------------------------------------------------------------------ -->
+  <section>
+    <div class="videos">
+      <figure class="stage" style="margin:0">
+        <video id="self" autoplay playsinline muted></video>
+        <svg class="guide" id="guide" aria-hidden="true"></svg>
+        <figcaption class="badge">You</figcaption>
+      </figure>
+      <figure class="stage" style="margin:0">
+        <video id="peer" autoplay playsinline></video>
+        <figcaption class="badge">Other person</figcaption>
+      </figure>
+    </div>
+
+    <h2 class="sr-only">Live captions</h2>
+    <div class="rail" id="rail" role="log" aria-live="polite" aria-relevant="additions text"
+         aria-label="Live captions" data-caption="medium" style="margin-top:14px">
+      <p style="color:var(--muted)">Captions appear here. Start the camera, teach a few signs, then sign them.</p>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" aria-selected="true"  data-panel="p-start">1 · Start</button>
+        <button class="tab" role="tab" aria-selected="false" data-panel="p-teach">2 · Teach signs</button>
+        <button class="tab" role="tab" aria-selected="false" data-panel="p-connect">3 · Connect a second person</button>
+        <button class="tab" role="tab" aria-selected="false" data-panel="p-transcript">Transcript</button>
+      </div>
+
+      <!-- START ------------------------------------------------------- -->
+      <div id="p-start" role="tabpanel">
+        <label class="field"><span>Your name</span>
+          <input type="text" id="name" placeholder="Guest" />
+        </label>
+        <label class="field"><span>How will you communicate?</span>
+          <select id="modality">
+            <option value="sign">I'll sign — my signs get spoken aloud</option>
+            <option value="speech">I'll speak — my speech becomes captions</option>
+          </select>
+        </label>
+        <label class="field"><span>Dominant hand (signing only)</span>
+          <select id="dominant"><option value="right">Right</option><option value="left">Left</option></select>
+        </label>
+        <div class="toolbar">
+          <button class="btn primary" id="startBtn">Start camera &amp; microphone</button>
+          <button class="btn" id="stopBtn" disabled>Stop</button>
+        </div>
+        <p class="note" id="bootNote">
+          MediaPipe weights (~12&nbsp;MB) download on first start. Everything after that runs offline
+          on your machine — no frame and no hand position ever leaves this browser.
+        </p>
+        <div id="startErr" class="err hidden" role="alert"></div>
+      </div>
+
+      <!-- TEACH ------------------------------------------------------- -->
+      <div id="p-teach" role="tabpanel" class="hidden">
+        <p class="note" style="margin-top:0">
+          Pick a sign, hold <kbd>Space</kbd> or press <b>Record</b>, perform it once, stop.
+          Aim for <b>8–12 takes each</b>, and vary them on purpose: different distance from the
+          camera, slightly different speed, hands in a slightly different place. Ten identical
+          takes teach the model that the sign means <i>exactly that</i>, and it will then fail on
+          the eleventh.
+        </p>
+        <div class="grid-signs" id="signGrid" style="margin:12px 0"></div>
+        <div class="toolbar">
+          <button class="btn primary" id="recBtn" disabled>Record take</button>
+          <button class="btn" id="undoBtn" disabled>Undo last</button>
+          <button class="btn" id="clearBtn">Clear all</button>
+          <button class="btn" id="exportBtn">Export samples</button>
+          <button class="btn" id="importBtn">Import</button>
+          <input type="file" id="importFile" accept="application/json" class="hidden" />
+        </div>
+        <p class="note">
+          A <b>NONE</b> class is pre-listed and it is not optional. Record yourself scratching your
+          nose, waving, reaching off-screen and gesturing while talking. Without it the classifier
+          is closed-set: it <i>must</i> pick one of your signs, so a stranger's idle movement gets
+          announced out loud as a word. This is the single biggest difference between a demo that
+          survives contact with a real person and one that does not.
+        </p>
+        <div id="teachWarn" class="warn hidden" role="status"></div>
+      </div>
+
+      <!-- CONNECT ----------------------------------------------------- -->
+      <div id="p-connect" role="tabpanel" class="hidden">
+        <p class="note" style="margin-top:0">
+          Direct browser-to-browser call with no server at all. One side creates an offer, the
+          other pastes it back — copy the text between the two machines any way you like.
+          Works on the same network without extra setup; across the internet it needs a TURN
+          server, which is exactly the problem LiveKit solves in the full app.
+        </p>
+        <div class="toolbar" style="margin:10px 0">
+          <button class="btn primary" id="createOffer">Create offer (host)</button>
+          <button class="btn" id="acceptOffer">Paste offer (guest)</button>
+          <button class="btn" id="acceptAnswer">Paste answer (host)</button>
+          <button class="btn danger" id="hangup" disabled>Hang up</button>
+        </div>
+        <label class="field"><span>Signalling text — copy this to the other machine</span>
+          <textarea id="sdpOut" readonly placeholder="…"></textarea>
+        </label>
+        <label class="field"><span>Paste what the other machine gave you, then press the matching button</span>
+          <textarea id="sdpIn" placeholder="…"></textarea>
+        </label>
+        <div class="status"><span class="dot" id="dotPeer"></span><span id="peerStatus">not connected</span></div>
+      </div>
+
+      <!-- TRANSCRIPT -------------------------------------------------- -->
+      <div id="p-transcript" role="tabpanel" class="hidden">
+        <p class="note" style="margin-top:0">
+          Ordered by when each utterance <b>started</b>, not when it arrived. A sign is detected
+          later than it happened — the segmenter has to wait for stillness to know it ended — so
+          sorting by arrival puts the reply above the question.
+        </p>
+        <ol id="transcript" style="padding-left:18px"></ol>
+        <div class="toolbar" style="margin-top:10px">
+          <button class="btn" id="downloadBtn">Download .txt</button>
+          <button class="btn danger" id="wipeBtn">Delete transcript</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ -->
+  <aside style="display:flex; flex-direction:column; gap:14px">
+    <div class="card">
+      <h2>Sign recognition</h2>
+      <div class="status" style="margin-bottom:10px">
+        <span class="dot" id="dotSign"></span><span id="signState">idle</span>
+      </div>
+      <div id="resultBox">
+        <p class="result muted" id="resultLabel">Nothing yet</p>
+        <p class="note" id="resultSub" style="margin-top:2px">
+          Teach at least two signs, then sign one and pause.
+        </p>
+        <div class="track" aria-hidden="true"><div class="fill" id="confFill" style="width:0%"></div></div>
+        <div class="kv"><span id="confWord">—</span><span id="confPct">—</span></div>
+      </div>
+      <div id="correctBox" class="hidden" style="margin-top:10px">
+        <p class="note" style="margin:0 0 6px">Wrong? Tell it what you meant — the correction is logged.</p>
+        <div class="grid-signs" id="correctGrid"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Live numbers</h2>
+      <div class="kv"><span>landmark extraction</span><span id="mLm">—</span></div>
+      <div class="kv"><span>classification (DTW k-NN)</span><span id="mCls">—</span></div>
+      <div class="kv"><span>end-of-sign detection lag</span><span id="mSeg">—</span></div>
+      <div class="kv"><span>speech synthesis start</span><span id="mTts">—</span></div>
+      <div class="kv" style="border-top:1px solid var(--border); margin-top:6px; padding-top:6px; color:var(--fg)">
+        <span><b>sign finished → heard</b></span><span id="mE2E">—</span>
+      </div>
+      <p class="note">
+        Watch which term dominates. It is almost never the classifier — it is the
+        <i>detection lag</i>, the stillness the segmenter waits for before deciding the sign is
+        over. Speeding up the model does nothing for perceived latency; shortening that wait
+        does, at the cost of chopping signs in half. That trade-off is the interesting engineering
+        result in this project, and it is worth a section in the report.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Thresholds</h2>
+      <label class="field"><span>Speak automatically above <b id="tAccVal">0.72</b> confidence</span>
+        <input type="range" id="tAccept" min="0.3" max="0.98" step="0.01" value="0.72" style="width:100%">
+      </label>
+      <label class="field"><span>Ask to confirm above <b id="tConVal">0.45</b></span>
+        <input type="range" id="tConfirm" min="0.1" max="0.9" step="0.01" value="0.45" style="width:100%">
+      </label>
+      <label class="field"><span>End-of-sign stillness: <b id="tExitVal">7</b> frames</span>
+        <input type="range" id="tExit" min="3" max="20" step="1" value="7" style="width:100%">
+      </label>
+      <p class="note">
+        Drag the last one and watch the latency number move. Lower is snappier and starts cutting
+        slow signs in two; higher is patient and feels sluggish. There is no correct value — there
+        is a value you choose for an error budget, which is what
+        <code>calibrate.py --fit-thresholds</code> does properly in the full project.
+      </p>
+    </div>
+  </aside>
+</main>
+
+<script type="module">
+/* ====================================================================== *
+ * Imports                                                                *
+ * ====================================================================== */
+import {
+  FilesetResolver, HandLandmarker, PoseLandmarker,
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+const CDN   = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+const HAND  = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+const POSE  = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+
+const $ = (id) => document.getElementById(id);
+
+/* ====================================================================== *
+ * Vocabulary                                                             *
+ * ====================================================================== */
+const VOCAB = ["HELLO", "YES", "NO", "HELP", "THANK_YOU", "EMERGENCY", "NONE"];
+const SPEECH = {
+  HELLO: "Hello.", YES: "Yes.", NO: "No.", HELP: "I need help.",
+  THANK_YOU: "Thank you.", EMERGENCY: "This is an emergency.",
+};
+const MIN_TAKES = 8;
+
+/* ====================================================================== *
+ * Feature encoder                                                        *
+ * Same geometry as ml/signspeak_ml/features.py and apps/web/lib/features.ts.
+ * Condensed here (no face block) but structurally identical: body-anchored
+ * frame, handshape normalised by hand size, location in body units,
+ * orientation as palm normal + finger axis, explicit presence flags.
+ * ====================================================================== */
+const NH = 21, WRIST = 0, IDX_MCP = 5, MID_MCP = 9, PNK_MCP = 17;
+const POSE_KEEP = [0, 11, 12, 13, 14, 15, 16, 23, 24];
+const SHAPE = NH * 3, HAND_BLOCK = SHAPE + 3 + 6 + 1;       // 73
+const STATIC = 2 * HAND_BLOCK + POSE_KEEP.length * 3;        // 173
+const DIM = STATIC * 2;                                      // + velocity
+const EPS = 1e-6;
+
+const vsub = (a,b)=>[a.x-b.x, a.y-b.y, a.z-b.z];
+const vlen = (v)=>Math.hypot(v[0],v[1],v[2]);
+const vdot = (a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const vcross = (a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+
+/** Torso-anchored orthonormal frame. This single step removes camera
+ *  distance, framing and roll — the three nuisances that otherwise make the
+ *  same sign look numerically different every time you shift in your chair. */
+function bodyFrame(pose){
+  if(!pose || pose.length < 25) return null;
+  const ls = pose[11], rs = pose[12], lh = pose[23], rh = pose[24];
+  if(!ls || !rs || !lh || !rh) return null;
+
+  const origin = [(ls.x+rs.x)/2, (ls.y+rs.y)/2, (ls.z+rs.z)/2];
+  const hip    = [(lh.x+rh.x)/2, (lh.y+rh.y)/2, (lh.z+rh.z)/2];
+
+  let x = vsub(ls, rs);
+  const s = vlen(x);
+  if(s < EPS) return null;
+  x = x.map(v => v / s);
+
+  const yr = [hip[0]-origin[0], hip[1]-origin[1], hip[2]-origin[2]];
+  const d = vdot(yr, x);
+  let y = [yr[0]-d*x[0], yr[1]-d*x[1], yr[2]-d*x[2]];   // Gram-Schmidt
+  const ny = vlen(y);
+  if(ny < EPS) return null;
+  y = y.map(v => v / ny);
+
+  return { origin, R: [x, y, vcross(x, y)], scale: s };
+}
+function toBody(p, bf){
+  const d = [p.x-bf.origin[0], p.y-bf.origin[1], p.z-bf.origin[2]];
+  return [vdot(bf.R[0],d)/bf.scale, vdot(bf.R[1],d)/bf.scale, vdot(bf.R[2],d)/bf.scale];
+}
+function encodeHand(hand, bf, out, off){
+  if(!hand || hand.length !== NH){ out.fill(0, off, off + HAND_BLOCK); return; }
+  const hb = hand.map(p => toBody(p, bf));
+  const w = hb[WRIST];
+  const rel = hb.map(p => [p[0]-w[0], p[1]-w[1], p[2]-w[2]]);
+
+  // Divide by hand size so an adult and a child making the same shape land in
+  // the same place in feature space.
+  let size = vlen(rel[MID_MCP]); if(size < EPS) size = 1;
+
+  let o = off;
+  for(const r of rel){ out[o++] = r[0]/size; out[o++] = r[1]/size; out[o++] = r[2]/size; }
+  out[o++] = w[0]; out[o++] = w[1]; out[o++] = w[2];
+
+  // Orientation is a real phoneme: flip the palm and it is a different sign.
+  let n = vcross(rel[IDX_MCP], rel[PNK_MCP]);
+  const nn = vlen(n); n = nn > EPS ? n.map(v=>v/nn) : [0,0,0];
+  let f = rel[MID_MCP].slice();
+  const fn = vlen(f); f = fn > EPS ? f.map(v=>v/fn) : [0,0,0];
+  out[o++] = n[0]; out[o++] = n[1]; out[o++] = n[2];
+  out[o++] = f[0]; out[o++] = f[1]; out[o++] = f[2];
+
+  out[o] = 1;   // presence — without this, "no hand" == "hand at the origin"
+}
+function mirrorStatic(v){
+  const out = v.slice();
+  let o = 0;
+  for(let h=0; h<2; h++){
+    for(let i=0;i<NH;i++) out[o+i*3] *= -1;
+    o += SHAPE; out[o] *= -1; o += 3;
+    out[o] *= -1; out[o+3] *= -1; o += 6 + 1;
+  }
+  for(let i=0;i<POSE_KEEP.length;i++) out[o+i*3] *= -1;
+  return out;
+}
+function encodeFrame(raw, dominant){
+  const bf = bodyFrame(raw.pose);
+  if(!bf) return null;                      // no torso → no frame → refuse
+  const out = new Float32Array(STATIC);
+  const mir = dominant === "left";
+  encodeHand(mir ? raw.left : raw.right, bf, out, 0);
+  encodeHand(mir ? raw.right : raw.left, bf, out, HAND_BLOCK);
+  let o = 2*HAND_BLOCK;
+  for(const i of POSE_KEEP){
+    const b = raw.pose[i] ? toBody(raw.pose[i], bf) : [0,0,0];
+    out[o++]=b[0]; out[o++]=b[1]; out[o++]=b[2];
+  }
+  return mir ? mirrorStatic(out) : out;
+}
+function addVelocity(frames){
+  const T = frames.length, out = new Float32Array(T*DIM);
+  for(let t=0;t<T;t++){
+    out.set(frames[t], t*DIM);
+    if(t>0) for(let i=0;i<STATIC;i++) out[t*DIM+STATIC+i] = frames[t][i]-frames[t-1][i];
+  }
+  return out;
+}
+function resample(seq, T, target){
+  if(T === target) return seq;
+  const out = new Float32Array(target*DIM);
+  if(T === 0) return out;
+  for(let i=0;i<target;i++){
+    const pos = T===1 ? 0 : i*(T-1)/(target-1);
+    const lo = Math.floor(pos), hi = Math.min(T-1, lo+1), w = pos-lo;
+    for(let c=0;c<DIM;c++) out[i*DIM+c] = seq[lo*DIM+c]*(1-w) + seq[hi*DIM+c]*w;
+  }
+  return out;
+}
+function energy(prev, cur){
+  if(!prev || cur[HAND_BLOCK-1] < .5 || prev[HAND_BLOCK-1] < .5) return 0;
+  const o = SHAPE;
+  return Math.hypot(cur[o]-prev[o], cur[o+1]-prev[o+1], cur[o+2]-prev[o+2]);
+}
+const inSigningSpace = (f) => f[HAND_BLOCK-1] >= .5 && f[SHAPE+1] < 1.15;
+
+/* ====================================================================== *
+ * Segmenter — hysteresis state machine                                   *
+ * Same constants as ml/signspeak_ml/config.py. Single-threshold detection
+ * looks fine on paper and fires three times per sign in practice.          *
+ * ====================================================================== */
+const SEG = { enter: .035, exit: .018, enterFrames: 3, exitFrames: 7, pad: 2, minFrames: 8, maxFrames: 90 };
+const FRAMES = 32, FPS = 25;
+
+class Segmenter {
+  constructor(){ this.reset(); }
+  reset(){ this.s="idle"; this.buf=[]; this.ts=[]; this.n=0; this.prev=null; this.start=null; }
+  get active(){ return this.s==="active" || this.s==="maybeDone"; }
+  push(f, t){
+    if(!f){ const out = this.active ? this.close(t) : null; this.reset(); return out; }
+    const e = energy(this.prev, f); this.prev = f;
+    const space = inSigningSpace(f);
+    const loud = e > SEG.enter && space, quiet = e < SEG.exit || !space;
+
+    this.buf.push(f); this.ts.push(t);
+    // Trimming shifts every index in the buffer and `this.start` is one of
+    // them, so it has to move too. Skip this and segments break a few seconds
+    // into a real call while every short test still passes.
+    const keep = SEG.maxFrames + SEG.pad + 4;
+    if(this.buf.length > keep){
+      const drop = this.buf.length - keep;
+      this.buf.splice(0, drop); this.ts.splice(0, drop);
+      if(this.start !== null) this.start = Math.max(0, this.start - drop);
+    }
+
+    switch(this.s){
+      case "idle":
+        if(loud){ this.s="maybeActive"; this.n=1; this.start=Math.max(0,this.buf.length-1-SEG.pad); }
+        return null;
+      case "maybeActive":
+        if(loud){ if(++this.n >= SEG.enterFrames) this.s="active"; }
+        else { this.s="idle"; this.n=0; this.start=null; }
+        return null;
+      case "active":
+        if(quiet){ this.s="maybeDone"; this.n=1; }
+        return this.trunc(t);
+      case "maybeDone":
+        if(loud){ this.s="active"; this.n=0; return this.trunc(t); }
+        if(++this.n >= SEG.exitFrames) return this.close(t);
+        return this.trunc(t);
+    }
+  }
+  trunc(t){
+    if(this.start===null) return null;
+    return (this.buf.length - this.start >= SEG.maxFrames) ? this.close(t, true) : null;
+  }
+  close(t, truncated=false){
+    const start = this.start;
+    this.s="idle"; this.n=0; this.start=null;
+    if(start===null) return null;
+    const tail = truncated ? 0 : Math.max(0, SEG.exitFrames - SEG.pad);
+    const end = Math.max(start+1, this.buf.length - tail);
+    const frames = this.buf.slice(start, end);
+    const startedAt = this.ts[start];
+    const endedAt = this.ts[Math.min(end, this.ts.length)-1] ?? t;
+    // Keep a short pre-roll only; the buffer must not accumulate the whole call.
+    const tailKeep = SEG.pad + 2;
+    if(this.buf.length > tailKeep){
+      this.buf.splice(0, this.buf.length - tailKeep);
+      this.ts.splice(0, this.ts.length - tailKeep);
+    }
+    if(frames.length < SEG.minFrames) return null;
+    return { frames, startedAt, endedAt };
+  }
+}
+
+/* ====================================================================== *
+ * Few-shot classifier — DTW k-NN                                         *
+ *                                                                        *
+ * Confidence here is NOT a softmax. It is derived from how the query's    *
+ * distance compares with the typical within-class distance of the stored  *
+ * takes. That is the honest quantity for a nearest-neighbour model: "how  *
+ * unusual is this compared to what I was shown", which also gives an      *
+ * abstain signal for free. A softmax over distances would look like a     *
+ * probability and mean nothing.                                          *
+ * ====================================================================== */
+class FewShot {
+  constructor(){ this.X = []; this.y = []; this.k = 3; this.band = 6; this.scale = null; }
+  add(seq, label){ this.X.push(seq); this.y.push(label); this.scale = null; }
+  undo(label){
+    for(let i=this.y.length-1;i>=0;i--) if(this.y[i]===label){ this.X.splice(i,1); this.y.splice(i,1); break; }
+    this.scale = null;
+  }
+  clear(){ this.X=[]; this.y=[]; this.scale=null; }
+  counts(){ const c={}; for(const l of this.y) c[l]=(c[l]||0)+1; return c; }
+  get labels(){ return [...new Set(this.y)]; }
+
+  /** Sakoe-Chiba banded DTW. The band caps how far the alignment may warp:
+   *  ~4x faster and slightly more accurate, because unbounded warping lets a
+   *  slow YES masquerade as a fast HELLO. */
+  dtw(a, b){
+    const n = a.length/DIM, m = b.length/DIM;
+    const cost = new Float32Array(n*m);
+    for(let i=0;i<n;i++) for(let j=Math.max(0,i-this.band); j<Math.min(m,i+this.band+1); j++){
+      let s=0; const ao=i*DIM, bo=j*DIM;
+      for(let c=0;c<DIM;c++){ const d=a[ao+c]-b[bo+c]; s+=d*d; }
+      cost[i*m+j]=s;
+    }
+    const INF = Infinity;
+    let prev = new Float64Array(m+1).fill(INF), cur = new Float64Array(m+1);
+    prev[0]=0;
+    for(let i=1;i<=n;i++){
+      cur.fill(INF);
+      const lo=Math.max(1,i-this.band), hi=Math.min(m,i+this.band);
+      for(let j=lo;j<=hi;j++){
+        cur[j] = cost[(i-1)*m+(j-1)] + Math.min(prev[j], cur[j-1], prev[j-1]);
+      }
+      [prev, cur] = [cur, prev];
+    }
+    return prev[m]/(n+m);
+  }
+
+  /** Typical within-class distance, cached. This is the yardstick the query
+   *  distance is measured against — without it "distance 4.2" means nothing. */
+  calibrate(){
+    if(this.scale) return this.scale;
+    const byLabel = {};
+    this.X.forEach((x,i)=>{ (byLabel[this.y[i]] ||= []).push(x); });
+    const within = {};
+    for(const [label, xs] of Object.entries(byLabel)){
+      const ds = [];
+      for(let i=0;i<xs.length;i++) for(let j=i+1;j<xs.length;j++) ds.push(this.dtw(xs[i], xs[j]));
+      ds.sort((a,b)=>a-b);
+      within[label] = ds.length ? ds[Math.floor(ds.length*0.5)] : 1;   // median
+    }
+    const all = Object.values(within).filter(v=>v>0);
+    this.scale = { within, global: all.length ? all.reduce((a,b)=>a+b,0)/all.length : 1 };
+    return this.scale;
+  }
+
+  predict(q){
+    if(this.X.length === 0) return null;
+    const t0 = performance.now();
+    const cal = this.calibrate();
+    const d = this.X.map(x => this.dtw(q, x));
+    const idx = d.map((v,i)=>[v,i]).sort((a,b)=>a[0]-b[0]).slice(0, Math.min(this.k, d.length));
+
+    // Vote by inverse distance
+    const votes = {};
+    for(const [dist, i] of idx) votes[this.y[i]] = (votes[this.y[i]] || 0) + 1/(dist + 1e-6);
+    const ranked = Object.entries(votes).sort((a,b)=>b[1]-a[1]);
+    const [label] = ranked[0];
+    const runnerUp = ranked[1]?.[0] ?? null;
+
+    // Nearest distance to the winning class, expressed in units of that
+    // class's own spread. ratio ~1 means "as close as two of your own takes
+    // are to each other"; ratio >> 1 means "nothing like anything I was shown".
+    const nearest = Math.min(...d.filter((_,i)=>this.y[i]===label));
+    const ref = (cal.within[label] || cal.global) + 1e-6;
+    const ratio = nearest / ref;
+    const conf = 1 / (1 + Math.exp((ratio - 1.6) * 2.2));   // squash into 0..1
+
+    // Margin: if the second-best class is nearly as close, the vote is not
+    // meaningful however small the absolute distance is.
+    const margin = ranked.length > 1 ? (ranked[0][1] - ranked[1][1]) / ranked[0][1] : 1;
+
+    return {
+      label, runnerUp,
+      confidence: Math.max(0, Math.min(1, conf * (0.55 + 0.45 * margin))),
+      ratio, margin, ms: performance.now() - t0,
+    };
+  }
+}
+
+/* ====================================================================== *
+ * App state                                                              *
+ * ====================================================================== */
+const state = {
+  stream: null, hand: null, pose: null, running: false,
+  seg: new Segmenter(), clf: new FewShot(),
+  recording: false, recBuf: [], pendingLabel: "HELLO",
+  dominant: "right", name: "Guest", modality: "sign",
+  lines: [], lastSpoken: new Map(),
+  thresholds: { accept: .72, confirm: .45 },
+  lastDecision: null, ttsUnlocked: false,
+  pc: null, dc: null, timers: { lm: 0, seg: 0 },
+};
+
+/* ------------------------------ UI helpers --------------------------- */
+function setDot(id, cls, text, textId){
+  const d = $(id); d.className = "dot" + (cls ? " " + cls : "");
+  if(textId) $(textId).textContent = text;
+}
+function fmt(ms){ return ms == null ? "—" : `${ms.toFixed(0)} ms`; }
+
+function addLine({ who, source, text, confidence, interim, utteranceId, startedAt }){
+  const rail = $("rail");
+  if(rail.firstElementChild?.tagName === "P") rail.innerHTML = "";
+
+  const key = utteranceId ? `${who}::${utteranceId}` : null;
+  let el = key ? rail.querySelector(`[data-key="${CSS.escape(key)}"]`) : null;
+
+  if(!el){
+    el = document.createElement("div");
+    el.className = "line";
+    if(key) el.dataset.key = key;
+    el.innerHTML = `<div class="meta"></div><div class="text"></div>`;
+    rail.appendChild(el);
+  }
+  el.classList.toggle("interim", !!interim);
+
+  const icon = source === "sign" ? "✋" : source === "speech" ? "🔊" : "ⓘ";
+  let chip = "";
+  if(confidence != null){
+    const pct = Math.round(confidence*100);
+    const tone = confidence >= .9 ? "high" : confidence >= .7 ? "medium" : "low";
+    const word = tone === "high" ? "high" : tone === "medium" ? "moderate" : "low";
+    chip = `<span class="chip ${tone}">${pct}% ${word}</span>`;
+  }
+  el.querySelector(".meta").innerHTML =
+    `<span aria-hidden="true">${icon}</span><b>${who}</b>` +
+    (source === "sign" ? `<span>· signed</span>` : "") +
+    (interim ? `<span>· still speaking</span>` : "") + chip;
+  el.querySelector(".text").textContent = text;
+
+  // Only auto-scroll if already pinned to the bottom — yanking someone back
+  // down mid-read is the most irritating caption bug there is.
+  const pinned = rail.scrollHeight - rail.scrollTop - rail.clientHeight < 60;
+  if(pinned) rail.scrollTop = rail.scrollHeight;
+
+  if(!interim){
+    state.lines.push({ who, source, text, confidence, startedAt: startedAt ?? performance.now() });
+    renderTranscript();
+  }
+}
+
+function renderTranscript(){
+  const ol = $("transcript");
+  ol.innerHTML = "";
+  // Sort by utterance START. Sign events arrive late by construction, so
+  // arrival order puts the answer above the question.
+  [...state.lines].sort((a,b)=>a.startedAt-b.startedAt).forEach(l=>{
+    const li = document.createElement("li");
+    const c = l.confidence != null ? ` — ${Math.round(l.confidence*100)}%` : "";
+    li.innerHTML = `<b>${l.who}</b>${l.source==="sign"?" (signed)":""}${c}<br>${l.text}`;
+    li.style.marginBottom = "9px";
+    ol.appendChild(li);
+  });
+}
+
+/* ------------------------------ TTS ---------------------------------- */
+function unlockTts(){
+  if(state.ttsUnlocked || !window.speechSynthesis) return;
+  const u = new SpeechSynthesisUtterance(""); u.volume = 0;
+  speechSynthesis.speak(u); state.ttsUnlocked = true;
+}
+function say(text){
+  return new Promise(res=>{
+    if(!window.speechSynthesis) return res(0);
+    const t0 = performance.now();
+    const u = new SpeechSynthesisUtterance(text);
+    let done = false;
+    const fin = ()=>{ if(!done){ done = true; res(performance.now()-t0); } };
+    u.onstart = fin; u.onerror = fin;
+    setTimeout(fin, 1500);
+    speechSynthesis.speak(u);
+  });
+}
+
+/* ------------------------------ Camera + models ---------------------- */
+async function boot(){
+  $("startErr").classList.add("hidden");
+  state.name = $("name").value.trim() || "Guest";
+  state.modality = $("modality").value;
+  state.dominant = $("dominant").value;
+
+  try{
+    unlockTts();   // must happen inside the click, or the browser silently mutes us
+    $("bootNote").textContent = "Requesting camera and microphone…";
+    state.stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 1280, height: 720, frameRate: 30 },
+      audio: true,
+    });
+    $("self").srcObject = state.stream;
+    setDot("dotCam", "ok", "camera on", "camStatus");
+    setDot("dotMic", "ok", "mic on", "micStatus");
+
+    $("bootNote").textContent = "Downloading MediaPipe weights (first run only)…";
+    const fileset = await FilesetResolver.forVisionTasks(`${CDN}/wasm`);
+    [state.hand, state.pose] = await Promise.all([
+      HandLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: HAND, delegate: "GPU" },
+        runningMode: "VIDEO", numHands: 2,
+        minHandDetectionConfidence: .5, minTrackingConfidence: .5,
+      }),
+      PoseLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: POSE, delegate: "GPU" },
+        runningMode: "VIDEO", numPoses: 1,
+      }),
+    ]);
+
+    $("bootNote").textContent = "Ready. Go to “Teach signs”.";
+    $("startBtn").disabled = true; $("stopBtn").disabled = false; $("recBtn").disabled = false;
+    state.running = true;
+    loop();
+    if(state.modality === "speech") startAsr();
+    selectTab("p-teach");
+  } catch(err){
+    const e = $("startErr");
+    e.classList.remove("hidden");
+    e.textContent =
+      err.name === "NotAllowedError"
+        ? "Camera or microphone permission was refused. Allow both and try again."
+        : `Could not start: ${err.message}. If you opened this file directly, serve it over http instead — getUserMedia needs a secure context.`;
+  }
+}
+
+function stopAll(){
+  state.running = false;
+  state.stream?.getTracks().forEach(t=>t.stop());
+  state.stream = null;
+  state.seg.reset();
+  setDot("dotCam", "", "camera off", "camStatus");
+  setDot("dotMic", "", "mic off", "micStatus");
+  $("startBtn").disabled = false; $("stopBtn").disabled = true; $("recBtn").disabled = true;
+  stopAsr();
+}
+
+/* ------------------------------ Main loop ---------------------------- */
+let t0 = 0, busy = false;
+function loop(){
+  if(!state.running) return;
+  const video = $("self");
+  const interval = 1000 / FPS;
+
+  // setInterval, not requestAnimationFrame: rAF follows the display (often
+  // 120 Hz), which would run MediaPipe four times per captured frame and heat
+  // the laptop for nothing.
+  const timer = setInterval(async ()=>{
+    if(!state.running){ clearInterval(timer); return; }
+    if(busy || video.readyState < 2) return;
+    busy = true;
+    try{
+      if(!t0) t0 = performance.now();
+      const now = performance.now() - t0;
+
+      const tl = performance.now();
+      const h = state.hand.detectForVideo(video, now);
+      const p = state.pose.detectForVideo(video, now);
+      state.timers.lm = performance.now() - tl;
+
+      let left = null, right = null;
+      for(let i=0;i<(h.landmarks?.length ?? 0);i++){
+        // Mirrored self-view: MediaPipe's "Left" is the user's right hand.
+        if(h.handednesses?.[i]?.[0]?.categoryName === "Left") right = h.landmarks[i];
+        else left = h.landmarks[i];
+      }
+      const raw = { pose: p.landmarks?.[0] ?? null, left, right };
+      const f = encodeFrame(raw, state.dominant);
+
+      drawGuide(f !== null, state.seg.active);
+      $("mLm").textContent = fmt(state.timers.lm);
+
+      if(state.recording){
+        if(f) state.recBuf.push(f);
+      } else if(state.modality === "sign"){
+        const seg = state.seg.push(f, now);
+        setDot("dotSign",
+          f === null ? "bad" : state.seg.active ? "busy" : "ok",
+          f === null ? "can't see your upper body" : state.seg.active ? "reading sign" : "watching",
+          "signState");
+        if(seg) await classify(seg);
+      }
+    } catch(e){ console.error(e); }
+    finally{ busy = false; }
+  }, interval);
+}
+
+function drawGuide(tracked, signing){
+  const color = !tracked ? "var(--low)" : signing ? "var(--accent)" : "var(--high)";
+  $("guide").innerHTML =
+    `<rect x="12%" y="6%" width="76%" height="88%" fill="none" stroke="${color}"
+       stroke-width="2" stroke-dasharray="10 8" rx="14" opacity="0.6"/>`;
+}
+
+/* ------------------------------ Decide ------------------------------- */
+async function classify(seg){
+  const q = resample(addVelocity(seg.frames), seg.frames.length, FRAMES);
+  const r = state.clf.predict(q);
+
+  // Detection lag: how long after the sign genuinely stopped we waited before
+  // deciding. This is the number that dominates perceived latency.
+  const segLagMs = (SEG.exitFrames / FPS) * 1000;
+  $("mSeg").textContent = fmt(segLagMs);
+
+  if(!r){
+    $("resultLabel").textContent = "No signs taught yet";
+    $("resultLabel").className = "result muted";
+    $("resultSub").textContent = "Record some takes in “Teach signs” first.";
+    return;
+  }
+  $("mCls").textContent = fmt(r.ms);
+  state.lastDecision = r;
+
+  const { accept, confirm } = state.thresholds;
+  let action = "reject";
+  if(r.label !== "NONE"){
+    if(r.confidence >= accept) action = "speak";
+    else if(r.confidence >= confirm) action = "confirm";
+  }
+
+  // --- render the signer's own panel ---
+  const lbl = $("resultLabel"), sub = $("resultSub");
+  const pct = Math.round(r.confidence*100);
+  const tone = r.confidence >= .9 ? "high" : r.confidence >= .7 ? "medium" : "low";
+  $("confFill").style.width = pct + "%";
+  $("confFill").style.background = `var(--${tone})`;
+  $("confPct").textContent = pct + "%";
+  $("confWord").textContent = tone === "high" ? "High confidence"
+    : tone === "medium" ? "Moderate confidence" : "Low confidence";
+
+  if(r.label === "NONE"){
+    lbl.textContent = "Not a sign"; lbl.className = "result muted";
+    sub.textContent = "Classified as background movement — nothing was said.";
+  } else if(action === "speak"){
+    lbl.textContent = r.label.replace(/_/g," "); lbl.className = "result";
+    sub.textContent = `Spoken as “${SPEECH[r.label] ?? r.label}”`;
+  } else if(action === "confirm"){
+    lbl.textContent = r.label.replace(/_/g," "); lbl.className = "result";
+    sub.textContent = "Not sure — sign again to confirm. Nothing has been said yet.";
+  } else {
+    lbl.textContent = "Didn't catch that"; lbl.className = "result muted";
+    sub.textContent = r.runnerUp
+      ? `Closest guesses were ${r.label.replace(/_/g," ")} and ${r.runnerUp.replace(/_/g," ")}. Please sign again.`
+      : "Please sign again.";
+  }
+  buildCorrectGrid(r.label);
+
+  if(action !== "speak") return;
+
+  // Debounce an identical label repeating. A trade: too long swallows a
+  // genuine "yes, yes"; too short turns one sign detected twice into a stutter.
+  const last = state.lastSpoken.get(r.label) ?? -Infinity;
+  if(seg.endedAt - last < 1200) return;
+  state.lastSpoken.set(r.label, seg.endedAt);
+
+  const text = SPEECH[r.label] ?? r.label;
+  addLine({ who: state.name, source: "sign", text, confidence: r.confidence,
+            utteranceId: `s${Math.round(seg.startedAt)}`, startedAt: seg.startedAt });
+  sendPeer({ kind:"caption", source:"sign", who: state.name, text,
+             confidence: r.confidence, startedAt: seg.startedAt, isFinal: true,
+             utteranceId: `s${Math.round(seg.startedAt)}` });
+
+  const ttsMs = await say(text);
+  $("mTts").textContent = fmt(ttsMs);
+  $("mE2E").textContent = fmt(segLagMs + r.ms + ttsMs);
+}
+
+function buildCorrectGrid(predicted){
+  const box = $("correctBox"), grid = $("correctGrid");
+  const labels = state.clf.labels.filter(l => l !== predicted);
+  if(!labels.length){ box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  grid.innerHTML = "";
+  for(const l of labels){
+    const b = document.createElement("button");
+    b.className = "btn sm"; b.textContent = l.replace(/_/g," ");
+    b.onclick = ()=>{
+      console.info("[correction]", { predicted, actual: l, confidence: state.lastDecision?.confidence });
+      $("resultSub").textContent = `Logged: you meant ${l.replace(/_/g," ")}. In the full app this becomes training data.`;
+      box.classList.add("hidden");
+    };
+    grid.appendChild(b);
+  }
+}
+
+/* ------------------------------ Teaching ----------------------------- */
+function buildSignGrid(){
+  const grid = $("signGrid");
+  grid.innerHTML = "";
+  const counts = state.clf.counts();
+  for(const label of VOCAB){
+    const n = counts[label] || 0;
+    const b = document.createElement("button");
+    b.className = "sign-btn";
+    b.setAttribute("aria-pressed", String(label === state.pendingLabel));
+    b.innerHTML =
+      `${label.replace(/_/g," ")}<span class="n ${n>=MIN_TAKES?"enough":""}">${n} take${n===1?"":"s"}</span>` +
+      `<span class="meter"><i style="width:${Math.min(100, n/MIN_TAKES*100)}%"></i></span>`;
+    b.onclick = ()=>{ state.pendingLabel = label; buildSignGrid(); $("undoBtn").disabled = !(counts[label]>0); };
+    grid.appendChild(b);
+  }
+  const taught = Object.keys(counts).filter(l => counts[l] >= 2);
+  const warn = $("teachWarn");
+  if(taught.length >= 2 && !counts.NONE){
+    warn.classList.remove("hidden");
+    warn.innerHTML =
+      "<b>No NONE samples yet.</b> Right now the classifier is closed-set: any movement " +
+      "it sees <i>must</i> be labelled as one of your signs. Record 10–15 takes of ordinary " +
+      "non-signing movement before showing this to anyone.";
+  } else warn.classList.add("hidden");
+}
+
+function startRec(){
+  if(!state.running || state.recording) return;
+  state.recording = true; state.recBuf = []; state.seg.reset();
+  $("recBtn").textContent = "Recording… release to stop";
+  $("recBtn").classList.add("danger");
+}
+function stopRec(){
+  if(!state.recording) return;
+  state.recording = false;
+  $("recBtn").textContent = "Record take";
+  $("recBtn").classList.remove("danger");
+
+  const frames = state.recBuf; state.recBuf = [];
+  if(frames.length < SEG.minFrames){
+    $("teachWarn").classList.remove("hidden");
+    $("teachWarn").textContent =
+      `Only ${frames.length} tracked frames — too short, or your upper body left the frame. Discarded.`;
+    return;
+  }
+  state.clf.add(resample(addVelocity(frames), frames.length, FRAMES), state.pendingLabel);
+  buildSignGrid();
+  $("undoBtn").disabled = false;
+}
+
+/* ------------------------------ Speech recognition ------------------- */
+let recog = null;
+function startAsr(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){
+    addLine({ who:"System", source:"system",
+      text:"This browser has no speech recognition. Chrome or Edge will do speech-to-text; sign recognition works everywhere." });
+    return;
+  }
+  recog = new SR();
+  recog.lang = "en-IN"; recog.continuous = true; recog.interimResults = true;
+  let uid = "", startedAt = 0;
+
+  recog.onresult = (ev)=>{
+    for(let i=ev.resultIndex; i<ev.results.length; i++){
+      const res = ev.results[i], txt = res[0].transcript.trim();
+      if(!uid){ uid = "u"+Date.now(); startedAt = performance.now(); }
+      addLine({ who: state.name, source:"speech", text: txt,
+                interim: !res.isFinal, utteranceId: uid, startedAt });
+      sendPeer({ kind:"caption", source:"speech", who: state.name, text: txt,
+                 isFinal: res.isFinal, utteranceId: uid, startedAt });
+      if(res.isFinal) uid = "";
+    }
+  };
+  // The API stops itself after silence; restart with a delay or a failing mic
+  // becomes a busy loop.
+  recog.onend = ()=>{ if(state.running && recog) setTimeout(()=>{ try{ recog.start(); }catch{} }, 250); };
+  recog.onerror = (e)=>{ if(e.error !== "no-speech" && e.error !== "aborted") console.warn("asr", e.error); };
+  try{ recog.start(); }catch{}
+}
+function stopAsr(){ const r = recog; recog = null; try{ r?.stop(); }catch{} }
+
+/* ------------------------------ WebRTC (manual signalling) ----------- */
+function newPeer(){
+  const pc = new RTCPeerConnection({ iceServers:[{ urls:"stun:stun.l.google.com:19302" }] });
+  state.stream?.getTracks().forEach(t => pc.addTrack(t, state.stream));
+  pc.ontrack = (e)=>{ $("peer").srcObject = e.streams[0]; };
+  pc.onconnectionstatechange = ()=>{
+    const s = pc.connectionState;
+    setDot("dotPeer", s==="connected"?"ok":s==="failed"?"bad":"warn", s, "peerStatus");
+    $("hangup").disabled = s !== "connected";
+  };
+  pc.ondatachannel = (e)=>{ state.dc = e.channel; wireChannel(e.channel); };
+  return pc;
+}
+function wireChannel(dc){
+  dc.onmessage = (e)=>{
+    const m = JSON.parse(e.data);
+    if(m.kind === "caption"){
+      addLine({ who: m.who, source: m.source, text: m.text, confidence: m.confidence,
+                interim: !m.isFinal, utteranceId: m.utteranceId, startedAt: m.startedAt });
+    }
+  };
+}
+function sendPeer(msg){
+  if(state.dc?.readyState === "open") state.dc.send(JSON.stringify(msg));
+}
+/** Wait for ICE gathering, so one paste carries the full candidate set.
+ *  Trickle ICE would be better but needs a signalling server — which is
+ *  precisely the thing this demo is avoiding. */
+function waitIce(pc){
+  return new Promise(res=>{
+    if(pc.iceGatheringState === "complete") return res();
+    const check = ()=>{ if(pc.iceGatheringState === "complete"){
+      pc.removeEventListener("icegatheringstatechange", check); res(); } };
+    pc.addEventListener("icegatheringstatechange", check);
+    setTimeout(res, 3000);
+  });
+}
+
+/* ------------------------------ Wiring ------------------------------- */
+$("startBtn").onclick = boot;
+$("stopBtn").onclick  = stopAll;
+
+$("recBtn").onmousedown = startRec;
+$("recBtn").onmouseup   = stopRec;
+$("recBtn").onmouseleave= ()=>{ if(state.recording) stopRec(); };
+$("recBtn").ontouchstart= (e)=>{ e.preventDefault(); startRec(); };
+$("recBtn").ontouchend  = (e)=>{ e.preventDefault(); stopRec(); };
+window.addEventListener("keydown", e=>{
+  if(e.code === "Space" && !e.repeat && document.activeElement.tagName !== "TEXTAREA"
+     && document.activeElement.tagName !== "INPUT"){ e.preventDefault(); startRec(); }
+});
+window.addEventListener("keyup", e=>{ if(e.code === "Space") stopRec(); });
+
+$("undoBtn").onclick = ()=>{ state.clf.undo(state.pendingLabel); buildSignGrid(); };
+$("clearBtn").onclick = ()=>{ state.clf.clear(); buildSignGrid(); };
+$("exportBtn").onclick = ()=>{
+  const payload = { version:1, dim:DIM, frames:FRAMES,
+    samples: state.clf.X.map((x,i)=>({ label: state.clf.y[i], data: Array.from(x) })) };
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(payload)], { type:"application/json" }));
+  a.download = "signspeak-samples.json"; a.click();
+};
+$("importBtn").onclick = ()=> $("importFile").click();
+$("importFile").onchange = async (e)=>{
+  const f = e.target.files?.[0]; if(!f) return;
+  const j = JSON.parse(await f.text());
+  if(j.dim !== DIM || j.frames !== FRAMES){
+    alert(`Those samples were recorded with a different feature encoder (dim ${j.dim} vs ${DIM}). Re-record them.`);
+    return;
+  }
+  for(const s of j.samples) state.clf.add(Float32Array.from(s.data), s.label);
+  buildSignGrid();
+};
+
+$("tAccept").oninput  = (e)=>{ state.thresholds.accept = +e.target.value; $("tAccVal").textContent = (+e.target.value).toFixed(2); };
+$("tConfirm").oninput = (e)=>{ state.thresholds.confirm = +e.target.value; $("tConVal").textContent = (+e.target.value).toFixed(2); };
+$("tExit").oninput    = (e)=>{ SEG.exitFrames = +e.target.value; $("tExitVal").textContent = e.target.value;
+                               $("mSeg").textContent = fmt(SEG.exitFrames/FPS*1000); };
+
+$("captionSize").onchange = (e)=> $("rail").dataset.caption = e.target.value;
+$("contrastBtn").onclick = (e)=>{
+  const on = document.documentElement.dataset.contrast !== "high";
+  document.documentElement.dataset.contrast = on ? "high" : "normal";
+  e.target.setAttribute("aria-pressed", String(on));
+};
+$("motionBtn").onclick = (e)=>{
+  const on = document.documentElement.dataset.motion !== "reduced";
+  document.documentElement.dataset.motion = on ? "reduced" : "normal";
+  e.target.setAttribute("aria-pressed", String(on));
+};
+
+$("createOffer").onclick = async ()=>{
+  state.pc = newPeer();
+  state.dc = state.pc.createDataChannel("captions", { ordered: true });
+  wireChannel(state.dc);
+  await state.pc.setLocalDescription(await state.pc.createOffer());
+  await waitIce(state.pc);
+  $("sdpOut").value = JSON.stringify(state.pc.localDescription);
+  $("sdpOut").select();
+};
+$("acceptOffer").onclick = async ()=>{
+  state.pc = newPeer();
+  await state.pc.setRemoteDescription(JSON.parse($("sdpIn").value));
+  await state.pc.setLocalDescription(await state.pc.createAnswer());
+  await waitIce(state.pc);
+  $("sdpOut").value = JSON.stringify(state.pc.localDescription);
+  $("sdpOut").select();
+};
+$("acceptAnswer").onclick = async ()=>{
+  await state.pc?.setRemoteDescription(JSON.parse($("sdpIn").value));
+};
+$("hangup").onclick = ()=>{ state.pc?.close(); state.pc = null; state.dc = null;
+  setDot("dotPeer","", "not connected","peerStatus"); $("hangup").disabled = true; };
+
+$("downloadBtn").onclick = ()=>{
+  const txt = [...state.lines].sort((a,b)=>a.startedAt-b.startedAt)
+    .map(l=>`${l.who}${l.source==="sign"?" (signed)":""}${l.confidence!=null?` [${Math.round(l.confidence*100)}%]`:""}\n${l.text}\n`)
+    .join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([txt], { type:"text/plain" }));
+  a.download = "signspeak-transcript.txt"; a.click();
+};
+$("wipeBtn").onclick = ()=>{ state.lines = []; renderTranscript();
+  $("rail").innerHTML = `<p style="color:var(--muted)">Transcript deleted.</p>`; };
+
+function selectTab(panel){
+  document.querySelectorAll(".tab").forEach(t=>{
+    const on = t.dataset.panel === panel;
+    t.setAttribute("aria-selected", String(on));
+    $(t.dataset.panel).classList.toggle("hidden", !on);
+  });
+}
+document.querySelectorAll(".tab").forEach(t=> t.onclick = ()=> selectTab(t.dataset.panel));
+
+buildSignGrid();
+$("mSeg").textContent = fmt(SEG.exitFrames/FPS*1000);
+</script>
+</body>
+</html>

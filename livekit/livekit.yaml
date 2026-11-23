@@ -1,0 +1,14 @@
+# Local dev config: advertise loopback ICE candidates so browsers on this
+# same machine can establish media. (Default --dev advertises the VM's
+# external/CGNAT IP, whose UDP ICE checks get no response in this sandbox.)
+port: 7880
+bind_addresses:
+  - "127.0.0.1"
+rtc:
+  tcp_port: 7881
+  port_range_start: 7882
+  port_range_end: 7892
+  use_external_ip: false
+  node_ip: 127.0.0.1
+keys:
+  devkey: secret

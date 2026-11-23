@@ -1,0 +1,18 @@
+# Build context for the backend image is backend/ — keep secrets, local
+# state and the 2.1 GB venv OUT of the image. Models are downloaded at
+# build time by the Dockerfile (never copied from the host).
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+.env
+*.db
+*.db-journal
+*.sqlite
+models/
+data/
+tests/
+docs/
+livekit-dev.md

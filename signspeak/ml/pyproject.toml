@@ -1,0 +1,25 @@
+[project]
+name = "signspeak-ml"
+version = "0.1.0"
+description = "Sign recognition: features, segmentation, temporal models, calibration, evaluation"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "torch>=2.2",
+]
+
+[project.optional-dependencies]
+capture = ["opencv-python>=4.9", "mediapipe>=0.10.14"]
+export  = ["onnx>=1.16", "onnxruntime>=1.18"]
+dev     = ["pytest>=8", "ruff>=0.5"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["signspeak_ml*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

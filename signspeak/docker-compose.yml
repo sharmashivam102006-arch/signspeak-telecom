@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: signspeak
+      POSTGRES_PASSWORD: signspeak
+      POSTGRES_DB: signspeak
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U signspeak"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # No persistence on purpose: everything in Redis here is ephemeral session
+    # state. If it survives a restart, that is a bug, not a feature.
+
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --dev --bind 0.0.0.0
+    ports: ["7880:7880", "7881:7881", "7882:7882/udp"]
+    environment:
+      LIVEKIT_KEYS: "devkey: devsecretdevsecretdevsecret12345"
+    # --dev mode only. It disables TLS and uses a fixed key; never expose this
+    # port outside a laptop.
+
+  api:
+    build: ./apps/api
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_started }
+    environment:
+      DATABASE_URL: postgresql+asyncpg://signspeak:signspeak@postgres:5432/signspeak
+      REDIS_URL: redis://redis:6379/0
+      LIVEKIT_URL: ws://localhost:7880
+      LIVEKIT_API_KEY: devkey
+      LIVEKIT_API_SECRET: devsecretdevsecretdevsecret12345
+      CORS_ORIGINS: '["http://localhost:3000"]'
+    ports: ["8000:8000"]
+    profiles: ["full"]
+
+volumes:
+  pgdata:
